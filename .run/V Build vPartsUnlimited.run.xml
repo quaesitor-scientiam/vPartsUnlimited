@@ -1,0 +1,12 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="V Build vPartsUnlimited" type="VlangRun" factoryName="VlangRun">
+    <option name="buildArguments" value="-enable-globals -g -keepc -cc clang" />
+    <option name="envs" value="" />
+    <option name="fileName" value="" />
+    <option name="outputFileName" value="$PROJECT_DIR$/../vPartsUnlimited\PartsUnlimited.exe" />
+    <option name="programArguments" value="" />
+    <method v="2">
+      <option name="VLANG.BUILD_TASK_PROVIDER" enabled="true" />
+    </method>
+  </configuration>
+</component>
