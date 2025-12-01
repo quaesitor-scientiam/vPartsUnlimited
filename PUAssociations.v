@@ -4,9 +4,10 @@ import os
 import encoding.xml
 import db.sqlite
 import logging { log_info }
-import common { extract_catalog, get_parts, process_dbcalls, setup_logging }
+import common { SQLQuery, extract_catalog, get_parts, get_tag_value, make_chunks, process_csvfile, process_dbcalls, setup_logging }
+import arrays
 
-fn process_parts(mut parts []xml.XMLNode, brand_name string, mut con sqlite.DB, parts_ch chan string, input_ch chan common.SQLQuery) !int {
+fn process_parts(mut parts []xml.XMLNode, brand_name string, mut con sqlite.DB, parts_ch chan []string, input_ch chan SQLQuery) !int {
 	mut result := []sqlite.Row{}
 	result = con.exec_param('SELECT brand_name FROM brands WHERE pu_brand_name == ?',
 		brand_name) or {
@@ -32,7 +33,7 @@ fn process_parts(mut parts []xml.XMLNode, brand_name string, mut con sqlite.DB, 
 	if parts.len > 1000 {
 		threads = 3
 	}
-	chunks := common.make_chunks(mut parts, threads)
+	chunks := make_chunks(mut parts, threads)
 
 	// Setup Brand
 	mut tlist := []thread int{}
@@ -40,9 +41,9 @@ fn process_parts(mut parts []xml.XMLNode, brand_name string, mut con sqlite.DB, 
 		tname := 'BrandWorker_${i}'
 		tlist << spawn get_parts(tname, chunks[i - 1], parts_ch, brand_name, input_ch)
 	}
-	tlist.wait()
-
-	log_info('Exiting processing_parts()', 3, module_name, '')
+	cnt_new := tlist.wait()
+	new_parts := arrays.sum(cnt_new)!
+	log_info('Exiting processing_parts() NewParts ${new_parts}', 3, module_name, '')
 	return 0
 }
 
@@ -50,7 +51,18 @@ fn main() {
 	setup_logging(false)
 	log_info('PartsUnlimited Processing has started', 1, module_name, '')
 	log_info('Download Path: ${common.download_path}', 2, module_name, '')
-	input_ch := chan common.SQLQuery{cap: 100}
+
+	mut mode := 'w'
+	if common.keep_csv {
+		mode = 'a'
+	}
+	cvsfile_path := os.join_path_single(common.project_path, 'PartAssociation.csv')
+
+	print_ch := chan string{cap: 100}
+	stop_ch := chan bool{}
+	pthread := spawn process_csvfile('PrintHandler', print_ch, mode, cvsfile_path, stop_ch)
+
+	input_ch := chan SQLQuery{cap: 100}
 	spawn process_dbcalls('DBHandler', input_ch)
 
 	mut con := sqlite.connect(common.db_fpath)!
@@ -60,7 +72,7 @@ fn main() {
 		data := extract_catalog(fpath)!
 		doc := xml.XMLDocument.from_string(data)!
 		mut allparts := doc.get_elements_by_tag('part')
-		brand_name := common.get_tag_value(allparts[0], 'brandName')
+		brand_name := get_tag_value(allparts[0], 'brandName')
 		if brand_name !in common.process_only_brands {
 			continue
 		} else if brand_name in common.skip_brands {
@@ -71,9 +83,11 @@ fn main() {
 		log_info('Processing Brand ${brand_name} consisting of ${total_parts} parts',
 			2, module_name, '')
 
-		parts_ch := chan string{cap: total_parts}
+		parts_ch := chan []string{cap: total_parts}
 
 		cnt_new := process_parts(mut allparts, brand_name, mut con, parts_ch, input_ch)!
+		stop_ch <- true
+		pthread.wait()
 		log_info('Exiting Catalog loop', 3, module_name, '')
 		break
 	}

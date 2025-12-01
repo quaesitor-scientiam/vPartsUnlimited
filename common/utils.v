@@ -28,7 +28,15 @@ pub fn extract_catalog(fp string) !string {
 }
 
 pub fn get_tag_value(part xml.XMLNode, tag_name string) string {
-	return part.get_elements_by_tag(tag_name)[0].children[0] as string
+	mut contents := ''
+	node := part.get_elements_by_tag(tag_name)
+	if node.len > 0 {
+		if node[0].children.len > 0 {
+			contents = node[0].children[0] as string
+		}
+	}
+
+	return contents
 }
 
 pub fn make_chunks(mut data []xml.XMLNode, size int) [][]xml.XMLNode {

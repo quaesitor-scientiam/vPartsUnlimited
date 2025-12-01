@@ -5,6 +5,41 @@ import os
 import encoding.xml
 import logging { log_error, log_info }
 import db.sqlite
+import rand
+
+pub fn process_csvfile(tname string, print_ch chan string, mode string, csvfile_path string, stop_ch chan bool) {
+	info('Opening cvsfile ${csvfile_path} with mode ${mode}', 2, tname)
+	mut csvfile := os.open_file(csvfile_path, mode) or {
+		error_log('Unable to create csv file ${csvfile_path} with error ${err.code()}',
+			2, tname)
+		exit(1)
+	}
+	defer {
+		info('Closing csvfile ${csvfile_path}', 3, tname)
+		csvfile.close()
+	}
+
+	for {
+		if select {
+			_ := <-stop_ch { // Stop signal received
+				info('Stop signal received stopping thread', 3, tname)
+				break
+			}
+		} {
+			line := <-print_ch or {
+				info('Nothing in Print Channel sleeping for 3 secs', 3, tname)
+				time.sleep(3 * time.second)
+				continue
+			}
+			csvfile.writeln(line) or {
+				error_log('Unable to write csv file ${csvfile_path} with error ${err.code()}',
+					3, tname)
+				exit(1)
+			}
+			csvfile.flush()
+		}
+	}
+}
 
 pub fn process_dbcalls(tname string, input_ch chan SQLQuery) {
 	info('Waiting for work', 3, tname)
@@ -25,7 +60,7 @@ pub fn process_dbcalls(tname string, input_ch chan SQLQuery) {
 		sql_str := sqlparams.sql_str
 		params := sqlparams.params
 		output_ch = sqlparams.output
-		info('Processing part ${params[1]}', 4, tname)
+		// info('Processing part ${params[1]}', 4, tname)
 		if params.len == 1 {
 			result = con.exec_param(sql_str, params[0]) or {
 				error_log('Query: ${sql_str} with params ${params} resulted in Error: ${err.code()}',
@@ -41,6 +76,13 @@ pub fn process_dbcalls(tname string, input_ch chan SQLQuery) {
 			}
 		}
 		con.commit() or { error_log('Commit failed with ${err.code()}', 3, tname) }
+		if result == [] {
+			result = [sqlite.Row{
+				vals: ['0']
+			}]
+		}
+		// No data was found
+		// info('Rows ${result}',4,tname)
 		output_ch <- SQLResults{
 			rows: result
 		}
@@ -49,7 +91,7 @@ pub fn process_dbcalls(tname string, input_ch chan SQLQuery) {
 	info('End of process_dbcalls()', 4, tname)
 }
 
-pub fn get_parts(tname string, parts []xml.XMLNode, parts_ch chan string, brand_name string, input_ch chan SQLQuery) int {
+pub fn get_parts(tname string, parts []xml.XMLNode, parts_ch chan []string, brand_name string, input_ch chan SQLQuery) int {
 	info('Processing ${parts.len} parts', 3, tname)
 
 	mut cnt_new := 0
@@ -58,19 +100,20 @@ pub fn get_parts(tname string, parts []xml.XMLNode, parts_ch chan string, brand_
 	mut product_image_url := ''
 	mut value := ''
 	output_ch := chan SQLResults{}
+	mut sqlresults := SQLResults{}
 
+	mut ctr := 0
 	for part in parts {
-		mut fields_checked_cnt := 0
 		value = get_tag_value(part, 'brandName')
 		if value != brand_name {
 			error_log('Brand name ${value} does not match expected ${brand_name}', 3,
 				tname)
 		}
-		log_info('Part ${part}', 4, module_name, '')
+		// log_info('Part ${part}', 4, module_name, '')
 		punctuated_part_number = get_tag_value(part, 'punctuatedPartNumber')
 		part_image_url = get_tag_value(part, 'partImage')
 		product_image_url = get_tag_value(part, 'productImage')
-		info('Part number: ${punctuated_part_number}', 4, tname)
+		// info('Part number: ${punctuated_part_number}', 4, tname)
 
 		if process_only_parts.len > 0 {
 			if punctuated_part_number !in process_only_parts {
@@ -78,19 +121,32 @@ pub fn get_parts(tname string, parts []xml.XMLNode, parts_ch chan string, brand_
 			}
 		}
 
-		mut part_status := 'SAME'
-
 		// info('Sending SQL Query via input channel', 4, tname)
 		input_ch <- SQLQuery{
 			sql_str: 'SELECT ID FROM parts_unlimited WHERE brand_name == ? and part_number == ?'
 			params:  [brand_name, punctuated_part_number]
 			output:  output_ch
 		}
-		sqlresults := <-output_ch
-		info('${punctuated_part_number} has ID:${sqlresults.rows[0].vals[0]}', 5, tname)
+		sqlresults = <-output_ch
+		mut part_id := sqlresults.rows[0].vals[0]
+		// Check for data not found
+		if part_id == '0' {
+			part_id = rand.uuid_v7().replace('-', '')
+			input_ch <- SQLQuery{
+				sql_str: 'Insert into parts_unlimited VALUES (?,?,?,?,?, CURRENT_TIMESTAMP)'
+				params:  [part_id, brand_name, punctuated_part_number, '1', 'Active']
+				output:  output_ch
+			}
+			sqlresults = <-output_ch
+			info('New Part ${punctuated_part_number} has ID:${part_id}', 5, tname)
+			cnt_new++
+		}
+		parts_ch <- [part_id, brand_name, punctuated_part_number, part_image_url, product_image_url]
+		// info('Part ${punctuated_part_number} has ID:${part_id}', 5, tname)
+		ctr++
 	}
 
-	info('End of get_parts()', 4, tname)
+	info('End of get_parts() total processed ${ctr}', 4, tname)
 	return cnt_new
 }
 

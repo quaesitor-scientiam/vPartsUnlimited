@@ -19,6 +19,7 @@ pub const logging_path = os.join_path_single(project_path, 'logs')
 pub const process_only_brands = ['100%']
 pub const process_only_parts = []string{}
 pub const skip_brands = []string{}
+pub const keep_csv = false
 
 pub struct SQLQuery {
 	sql_str string
