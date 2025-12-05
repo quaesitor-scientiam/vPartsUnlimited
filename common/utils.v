@@ -44,7 +44,7 @@ pub fn make_chunks(mut data []xml.XMLNode, size int) [][]xml.XMLNode {
 	mut results := [][]xml.XMLNode{cap: chunk}
 	for data.len > chunk {
 		results << data[..chunk]
-		data = data[chunk..]
+		data = unsafe{ data[chunk..] }
 		if (size - results.len) == 1 {
 			break
 		}
@@ -71,4 +71,22 @@ pub fn setup_logging(keep_log bool) {
 		}
 	}
 	set_output_file(logfile)
+}
+
+pub fn reset_database() {
+	if !production_run {
+		if os.exists(backup_dbfpath) {
+			os.cp(backup_dbfpath, db_fpath) or {
+				error_log('Unabled to copy backup db at f${backup_dbfpath} to current at ${db_fpath} with error: ${err.code()}', 2, '')
+				exit(1)
+			}
+		}
+	} else {
+		if os.exists(db_fpath) {
+			os.cp(db_fpath, backup_dbfpath) or {
+				error_log('Unabled to copy db at f${db_fpath} to current at ${backup_dbfpath} with error: ${err.code()}', 2, '')
+				exit(1)
+			}
+		}
+	}
 }

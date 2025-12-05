@@ -4,7 +4,8 @@ import os
 import encoding.xml
 import db.sqlite
 import logging { log_info }
-import common { SQLQuery, extract_catalog, get_parts, get_tag_value, make_chunks, process_csvfile, process_dbcalls, setup_logging }
+import common { SQLQuery, Channels, extract_catalog, get_parts, get_tag_value, make_chunks, process_csvfile, process_dbcalls,
+				setup_logging, reset_database, get_images }
 import arrays
 
 fn process_parts(mut parts []xml.XMLNode, brand_name string, mut con sqlite.DB, parts_ch chan []string, input_ch chan SQLQuery) !int {
@@ -52,6 +53,9 @@ fn main() {
 	log_info('PartsUnlimited Processing has started', 1, module_name, '')
 	log_info('Download Path: ${common.download_path}', 2, module_name, '')
 
+	reset_database()
+
+	// CSV file handling
 	mut mode := 'w'
 	if common.keep_csv {
 		mode = 'a'
@@ -59,12 +63,20 @@ fn main() {
 	cvsfile_path := os.join_path_single(common.project_path, 'PartAssociation.csv')
 
 	print_ch := chan string{cap: 100}
-	stop_ch := chan bool{}
-	pthread := spawn process_csvfile('PrintHandler', print_ch, mode, cvsfile_path, stop_ch)
+	pstop_ch := chan bool{}
+	pthread := spawn process_csvfile('PrintHandler', print_ch, mode, cvsfile_path, pstop_ch)
 
+	// DB handling
 	input_ch := chan SQLQuery{cap: 100}
-	spawn process_dbcalls('DBHandler', input_ch)
+	dbthread := spawn process_dbcalls('DBHandler', input_ch)
 
+	chans := Channels {
+		input: input_ch
+		print: print_ch
+		stop:  chan bool{}
+	}
+
+	// Image handling
 	mut con := sqlite.connect(common.db_fpath)!
 
 	catalogs := os.walk_ext(common.download_path, '.zip')
@@ -84,11 +96,20 @@ fn main() {
 			2, module_name, '')
 
 		parts_ch := chan []string{cap: total_parts}
+		mut threads := 1
+		for i in 1..threads {
+			spawn get_images('ImageHandler_${i}', parts_ch, chans, '')
+		}
 
 		cnt_new := process_parts(mut allparts, brand_name, mut con, parts_ch, input_ch)!
-		stop_ch <- true
+		pstop_ch <- true
 		pthread.wait()
 		log_info('Exiting Catalog loop', 3, module_name, '')
 		break
-	}
+	} // End of loop
+
+	at_exit(fn () {
+		log_info('Exiting program', 2, module_name, '')
+	})!
+	exit(0)
 }

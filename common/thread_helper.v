@@ -7,6 +7,10 @@ import logging { log_error, log_info }
 import db.sqlite
 import rand
 
+pub fn get_images(tname string, parts_ch chan []string, chans Channels, restart_on string) {
+	info('Image Thread ${tname} started', 3, tname)
+}
+
 pub fn process_csvfile(tname string, print_ch chan string, mode string, csvfile_path string, stop_ch chan bool) {
 	info('Opening cvsfile ${csvfile_path} with mode ${mode}', 2, tname)
 	mut csvfile := os.open_file(csvfile_path, mode) or {
@@ -41,51 +45,63 @@ pub fn process_csvfile(tname string, print_ch chan string, mode string, csvfile_
 	}
 }
 
-pub fn process_dbcalls(tname string, input_ch chan SQLQuery) {
-	info('Waiting for work', 3, tname)
+pub fn process_dbcalls(tname string, input_ch chan SQLQuery)! {
+	info('Waiting for work', 2, tname)
 	mut con := sqlite.connect_full(db_fpath, [.readwrite, .create, .nomutex], '') or {
 		error_log('Database connection to ${db_fpath} failed with ${err.code()}', 3, tname)
 		exit(1)
 	}
+	at_exit(fn [mut con, tname] () {
+		con.close() or { panic(err) }
+		info('Database connection has been closed', 2, tname)
+	})!
 	mut sqlparams := SQLQuery{}
 	mut result := []sqlite.Row{}
 	mut output_ch := chan SQLResults{}
 
 	for {
-		sqlparams = <-input_ch or {
-			info('Nothing in Input Channel sleeping for 3 secs', 4, tname)
-			time.sleep(3 * time.second)
-			continue
-		}
-		sql_str := sqlparams.sql_str
-		params := sqlparams.params
-		output_ch = sqlparams.output
-		// info('Processing part ${params[1]}', 4, tname)
-		if params.len == 1 {
-			result = con.exec_param(sql_str, params[0]) or {
-				error_log('Query: ${sql_str} with params ${params} resulted in Error: ${err.code()}',
-					3, tname)
-				exit(1)
+		{
+			sqlparams = <-input_ch or {
+				info('Nothing in Input Channel sleeping for 3 secs', 4, tname)
+				time.sleep(3 * time.second)
+				continue
+			}
+			sql_str := sqlparams.sql_str
+			params := sqlparams.params
+			output_ch = sqlparams.output
+			// info('Processing part ${params[1]}', 4, tname)
+			if params.len == 1 {
+				result = con.exec_param(sql_str, params[0]) or {
+					error_log('Query: ${sql_str} with params ${params} resulted in Error: ${err.code()}',
+						3, tname)
+					exit(1)
+				}
+			}
+			if params.len >= 2 {
+				result = con.exec_param_many(sql_str, params) or {
+					error_log('Query: ${sql_str} with params ${params} resulted in Error: ${err.code()}',
+						3, tname)
+					exit(1)
+				}
+			}
+			con.commit() or { error_log('Commit failed with ${err.code()}', 3, tname) }
+			if result == [] {
+				result = [sqlite.Row{
+					vals: ['0']
+				}]
+			}
+			// No data was found
+			// info('Rows ${result}',4,tname)
+			output_ch <- SQLResults{
+				rows: result
 			}
 		}
-		if params.len >= 2 {
-			result = con.exec_param_many(sql_str, params) or {
-				error_log('Query: ${sql_str} with params ${params} resulted in Error: ${err.code()}',
-					3, tname)
-				exit(1)
-			}
-		}
-		con.commit() or { error_log('Commit failed with ${err.code()}', 3, tname) }
-		if result == [] {
-			result = [sqlite.Row{
-				vals: ['0']
-			}]
-		}
-		// No data was found
-		// info('Rows ${result}',4,tname)
-		output_ch <- SQLResults{
-			rows: result
-		}
+		// if select {
+		// 	_ := <-stop_ch { // Stop signal received
+		// 		info('Stop signal received stopping thread', 3, tname)
+		// 		break
+		// 	}
+		// }
 	} // End for loop
 
 	info('End of process_dbcalls()', 4, tname)
